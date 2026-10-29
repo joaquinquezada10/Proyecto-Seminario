@@ -4,3 +4,4 @@ print("Proyecto de reconocimiento de patentes")
 
 
 dwajdiwadadadw
+iknñ
