@@ -1,2 +1,1 @@
-print("Proyecto de reconocimiento de patentes")
-
+# 	Abre la foto, usa YOLO para localizar la patente, llama al OCR y muestra el resultado

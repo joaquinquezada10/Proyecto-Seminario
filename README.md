@@ -1,1 +1,28 @@
-# Proyecto-Seminario
+# Deteccion de patentes en una obra de construccion
+
+Proyecto del ramo Seminario CS. Ingenieria.
+
+El objetivo es detectar patentes en fotografias de vehiculos, leer sus
+caracteres y verificar si estan registradas en los datos de la empresa.
+
+## Herramientas
+
+Python, YOLOv8, OpenCV y EasyOCR.
+
+## Archivos principales
+
+- entrenar.py: entrenamiento del modelo.
+- main.py: programa principal, en desarrollo.
+- requirements.txt: librerias necesarias.
+
+## Descargas
+
+- Dataset: https://drive.google.com/drive/folders/1nivlN_p1vRTM9kgUdG4DvNLWOuUNUjei?usp=sharing
+- Modelo entrenado best.pt: https://drive.google.com/file/d/1K01deJBVA2WWnrAQZGTtkEYRp37wuDrs/view?usp=sharing
+
+## Uso
+
+Crear un entorno virtual, instalar las librerias de requirements.txt
+y descargar el dataset y el modelo entrenado.
+
+Para usar best.pt no es necesario volver a entrenar.

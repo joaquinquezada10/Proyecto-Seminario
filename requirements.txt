@@ -1,3 +1,5 @@
+# Librerías necesarias
+
 ultralytics==8.4.154
 easyocr==1.7.2
 torch==2.10.0
