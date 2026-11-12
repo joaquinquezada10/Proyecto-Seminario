@@ -6,7 +6,6 @@ import re
 
 lector = easyocr.Reader(["en"], gpu=False)
 
-
 def preprocesar_imagen(imagen):
     """
     Prepara el recorte de la patente para facilitar su lectura.
@@ -23,7 +22,6 @@ def preprocesar_imagen(imagen):
     gris = cv2.equalizeHist(gris)
 
     return gris
-
 
 def leer_patente(imagen):
     """
