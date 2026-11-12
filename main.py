@@ -114,7 +114,7 @@ def main():
                     alto, ancho = imagen.shape[:2]
                     escritor = cv2.VideoWriter(
                         str(ruta_video),
-                        cv2.VideoWriter_fourcc(*"mp4v"),
+                        getattr(cv2, "VideoWriter_fourcc")(*"mp4v"),
                         fps,
                         (ancho, alto)
                     )
