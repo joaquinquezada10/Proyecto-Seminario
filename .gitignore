@@ -7,5 +7,4 @@ runs/
 yolov8n.pt
 modelos/easyocr/
 .vscode/
-Registro de vehiculos/
 docs/
