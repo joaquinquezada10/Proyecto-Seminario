@@ -3,7 +3,6 @@ venv/
 __pycache__/
 *.pyc
 dataset/
-runs/
 yolov8n.pt
 modelos/easyocr/
 .vscode/
