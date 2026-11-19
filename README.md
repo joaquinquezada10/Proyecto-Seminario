@@ -14,7 +14,7 @@ Python, YOLOv8, OpenCV y EasyOCR.
 - entrenar.py: entrenamiento del modelo.
 - main.py: programa principal.
 - requirements.txt: librerias necesarias.
-- Modelo entrenado best.pt esta en la carpeta modelos
+- Modelo entrenado best.pt esta en la carpeta modelos.
 
 ## Descargas
 
