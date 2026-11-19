@@ -24,16 +24,12 @@ lector = easyocr.Reader(
 
 def formatear_patente(texto: str) -> str:
     """
-    Formatea el texto alfanumerico segun el estandar chileno:
-    - Formato nuevo (4 letras + 2 numeros): 'PTKX93' -> 'PT KX-93'
-    - Formato antiguo (2 letras + 4 numeros): 'AB1234' -> 'AB 12-34'
+    Formatea patentes chilenas modernas (4 letras + 2 numeros).
+    Ejemplo: 'PTKX93' -> 'PT KX-93'.
     """
     limpio = re.sub(r"[^A-Z0-9]", "", texto.upper())
-    if len(limpio) == 6:
-        if limpio[:4].isalpha() and limpio[4:].isdigit():
-            return f"{limpio[:2]} {limpio[2:4]}-{limpio[4:]}"
-        if limpio[:2].isalpha() and limpio[2:].isdigit():
-            return f"{limpio[:2]} {limpio[2:4]}-{limpio[4:]}"
+    if len(limpio) == 6 and limpio[:4].isalpha() and limpio[4:].isdigit():
+        return f"{limpio[:2]} {limpio[2:4]}-{limpio[4:]}"
     return limpio
 
 
