@@ -214,6 +214,15 @@ def procesar_cuadro(
             )
             continue
 
+        # Rechazar patentes que no cumplan el formato moderno
+        if not es_moderna:
+            dibujar_recuadro_con_etiqueta(
+                anotada, x1, y1, x2, y2,
+                "FORMATO NO VALIDO", patente_formato,
+                (128, 128, 128)
+            )
+            continue
+
         # Verificar autorizacion en registro
         autorizado, detalle = verificar_patente(patente_limpia)
 
