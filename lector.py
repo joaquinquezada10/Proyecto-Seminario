@@ -24,12 +24,18 @@ lector = easyocr.Reader(
 
 def formatear_patente(texto: str) -> str:
     """
-    Formatea patentes chilenas modernas (4 letras + 2 numeros).
-    Ejemplo: 'PTKX93' -> 'PT KX-93'.
+    Formatea patentes chilenas segun su tipo:
+    - Moderna (4 letras + 2 numeros): 'PTKX93' -> 'PT KX-93'
+    - Antigua (2 letras + 4 numeros): 'BB1000' -> 'BB 10-00'
     """
-    limpio = re.sub(r"[^A-Z0-9]", "", texto.upper())
-    if len(limpio) == 6 and limpio[:4].isalpha() and limpio[4:].isdigit():
-        return f"{limpio[:2]} {limpio[2:4]}-{limpio[4:]}"
+    limpio = re.sub(r"[^A-Z0-9]", "", texto.upper().strip())
+    if len(limpio) == 6:
+        # Moderna: 4 letras + 2 numeros
+        if limpio[:4].isalpha() and limpio[4:].isdigit():
+            return f"{limpio[:2]} {limpio[2:4]}-{limpio[4:]}"
+        # Antigua: 2 letras + 4 numeros
+        if limpio[:2].isalpha() and limpio[2:].isdigit():
+            return f"{limpio[:2]} {limpio[2:4]}-{limpio[4:]}"
     return limpio
 
 
@@ -88,10 +94,15 @@ def generar_variantes_ocr(imagen):
     return [mejorada, otsu, otsu_invertida, adaptativa]
 
 
-def _obtener_lecturas_linea(salida_ocr):
+PALABRAS_RUIDO = {"CHILE", "WILE", "CHLE", "CHI", "ILE", "CHIL", "HILE"}
+
+
+def _obtener_lecturas_linea(salida_ocr, alto_img=None):
     """
     Une fragmentos que pertenecen a una misma linea, sin mezclar
     detecciones que EasyOCR ubico en alturas diferentes.
+    Descarta palabras de ruido (CHILE, marcas de portapatente) y
+    detecciones situadas en el tercio inferior del recorte.
     """
     detecciones = []
 
@@ -102,7 +113,7 @@ def _obtener_lecturas_linea(salida_ocr):
         bbox, texto_item, confianza = item
         texto_item = re.sub(r"[^A-Z0-9]", "", str(texto_item).upper())
 
-        if not texto_item:
+        if not texto_item or texto_item in PALABRAS_RUIDO:
             continue
 
         try:
@@ -111,6 +122,14 @@ def _obtener_lecturas_linea(salida_ocr):
             alto = max(float(p[1]) for p in bbox) - min(float(p[1]) for p in bbox)
         except (IndexError, TypeError, ValueError):
             continue
+
+        # Si tenemos la altura del recorte, descartar textos que esten en la parte inferior
+        # y de baja altura (texto 'CHILE' o marcas del portapatente)
+        if alto_img is not None and alto_img > 0:
+            rel_y = centro_y / float(alto_img)
+            rel_h = alto / float(alto_img)
+            if rel_y > 0.68 and rel_h < 0.35:
+                continue
 
         detecciones.append({
             "x": centro_x,
@@ -158,7 +177,7 @@ def _obtener_lecturas_linea(salida_ocr):
 def leer_patente(imagen):
     """
     Prueba varias versiones del recorte y selecciona la lectura mas confiable.
-    No modifica letras ni numeros para forzar el formato de una patente.
+    Descarta ruido inferior (palabra CHILE) y prioriza formatos validos de patente chilena.
     """
     if imagen is None or imagen.size == 0:
         return "", 0.0
@@ -174,37 +193,36 @@ def leer_patente(imagen):
             paragraph=False
         )
 
-        for texto, confianza in _obtener_lecturas_linea(salida_ocr):
-            # Evitar aceptar lecturas con confianza demasiado baja
-            if confianza < 0.25:
+        for texto, confianza in _obtener_lecturas_linea(salida_ocr, alto_img=variante.shape[0]):
+            if confianza < 0.20:
                 continue
-
-            # El formato esperado solo desempata; no puede compensar
-            # una lectura con confianza OCR inferior.
-            puntaje = confianza
-            if len(texto) == 6:
-                puntaje += 0.02
-
-            candidatos.append((texto, confianza, puntaje))
+            candidatos.append((texto, confianza))
 
     if not candidatos:
         return "", 0.0
 
-    # Las lecturas repetidas en distintas variantes reciben un pequeno apoyo.
+    # Agrupar lecturas repetidas en distintas variantes
     conteo = {}
-    for texto, confianza, puntaje in candidatos:
-        conteo.setdefault(texto, []).append((confianza, puntaje))
+    for texto, confianza in candidatos:
+        conteo.setdefault(texto, []).append(confianza)
 
     resultados = []
-    for texto, lecturas in conteo.items():
-        confianza_media = sum(item[0] for item in lecturas) / len(lecturas)
-        apoyo = min(len(lecturas) - 1, 3) * 0.03
-        puntaje_final = confianza_media + apoyo
+    for texto, confs in conteo.items():
+        conf_max = max(confs)
+        conf_avg = sum(confs) / len(confs)
+        conf_base = conf_max * 0.7 + conf_avg * 0.3
+        apoyo = min(len(confs) - 1, 3) * 0.05
 
+        puntaje_final = conf_base + apoyo
         if len(texto) == 6:
-            puntaje_final += 0.02
+            puntaje_final += 0.25
+        elif len(texto) == 7 and (texto[4] in ("0", "O") or texto[2] in ("0", "O")):
+            puntaje_final += 0.18
+        elif len(texto) < 6:
+            # Penalizar lecturas truncadas/incompletas
+            puntaje_final -= 0.30
 
-        resultados.append((puntaje_final, texto, confianza_media))
+        resultados.append((puntaje_final, texto, conf_max))
 
     mejor = max(resultados, key=lambda item: item[0])
     return mejor[1], mejor[2]
