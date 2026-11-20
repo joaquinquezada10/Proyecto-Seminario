@@ -35,15 +35,14 @@ def formatear_patente(texto: str) -> str:
 
 def preprocesar_imagen(imagen):
     """
-    Mejora el recorte de la patente y aumenta su tamano para facilitar el OCR.
+    Amplia el recorte y mejora el contraste para facilitar la lectura.
     """
     if imagen is None or imagen.size == 0:
         return None
 
     alto, ancho = imagen.shape[:2]
+    escala = max(2.0, 180 / float(alto))
 
-    # Ampliar recortes pequenos sin deformar la imagen
-    escala = max(2.0, 160 / float(alto))
     imagen = cv2.resize(
         imagen,
         (int(ancho * escala), int(alto * escala)),
@@ -58,26 +57,24 @@ def preprocesar_imagen(imagen):
     else:
         gris = imagen.copy()
 
-    # Reducir ruido y mejorar el contraste local
-    suavizado = cv2.bilateralFilter(gris, d=5, sigmaColor=50, sigmaSpace=50)
+    suavizado = cv2.bilateralFilter(gris, 5, 50, 50)
     clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
-    mejorada = clahe.apply(suavizado)
-
-    return mejorada
+    return clahe.apply(suavizado)
 
 
 def generar_variantes_ocr(imagen):
     """
-    Genera distintas versiones del recorte para probar condiciones de luz
-    y contraste diferentes.
+    Genera versiones con diferentes niveles de contraste y umbralizacion.
     """
     mejorada = preprocesar_imagen(imagen)
     if mejorada is None:
         return []
 
-    # Umbralizacion para separar los caracteres del fondo
     _, otsu = cv2.threshold(
         mejorada, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU
+    )
+    _, otsu_invertida = cv2.threshold(
+        mejorada, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU
     )
     adaptativa = cv2.adaptiveThreshold(
         mejorada,
@@ -88,13 +85,80 @@ def generar_variantes_ocr(imagen):
         11
     )
 
-    return [mejorada, otsu, adaptativa]
+    return [mejorada, otsu, otsu_invertida, adaptativa]
+
+
+def _obtener_lecturas_linea(salida_ocr):
+    """
+    Une fragmentos que pertenecen a una misma linea, sin mezclar
+    detecciones que EasyOCR ubico en alturas diferentes.
+    """
+    detecciones = []
+
+    for item in salida_ocr:
+        if not isinstance(item, (list, tuple)) or len(item) < 3:
+            continue
+
+        bbox, texto_item, confianza = item
+        texto_item = re.sub(r"[^A-Z0-9]", "", str(texto_item).upper())
+
+        if not texto_item:
+            continue
+
+        try:
+            centro_x = sum(float(p[0]) for p in bbox) / len(bbox)
+            centro_y = sum(float(p[1]) for p in bbox) / len(bbox)
+            alto = max(float(p[1]) for p in bbox) - min(float(p[1]) for p in bbox)
+        except (IndexError, TypeError, ValueError):
+            continue
+
+        detecciones.append({
+            "x": centro_x,
+            "y": centro_y,
+            "alto": max(alto, 1.0),
+            "texto": texto_item,
+            "confianza": float(confianza)
+        })
+
+    if not detecciones:
+        return []
+
+    detecciones.sort(key=lambda d: d["y"])
+    lineas = []
+
+    for deteccion in detecciones:
+        linea_encontrada = None
+
+        for linea in lineas:
+            centro_linea = sum(d["y"] for d in linea) / len(linea)
+            alto_medio = sum(d["alto"] for d in linea) / len(linea)
+
+            if abs(deteccion["y"] - centro_linea) <= alto_medio * 0.6:
+                linea_encontrada = linea
+                break
+
+        if linea_encontrada is None:
+            lineas.append([deteccion])
+        else:
+            linea_encontrada.append(deteccion)
+
+    lecturas = []
+
+    for linea in lineas:
+        linea.sort(key=lambda d: d["x"])
+        texto = "".join(d["texto"] for d in linea)
+        confianza = sum(d["confianza"] for d in linea) / len(linea)
+
+        if texto:
+            lecturas.append((texto, confianza))
+
+    return lecturas
 
 
 def leer_patente(imagen):
     """
-    Lee una patente probando varias versiones del recorte.
-    Devuelve el texto con mejor resultado y su confianza OCR.
+    Prueba varias versiones del recorte y selecciona la lectura mas confiable.
+    No modifica letras ni numeros para forzar el formato de una patente.
     """
     if imagen is None or imagen.size == 0:
         return "", 0.0
@@ -110,54 +174,39 @@ def leer_patente(imagen):
             paragraph=False
         )
 
-        if not salida_ocr:
-            continue
+        for texto, confianza in _obtener_lecturas_linea(salida_ocr):
+            # Evitar aceptar lecturas con confianza demasiado baja
+            if confianza < 0.25:
+                continue
 
-        # Ordenar los fragmentos de izquierda a derecha
-        detecciones = []
-        for item in salida_ocr:
-            if isinstance(item, (list, tuple)) and len(item) >= 3:
-                bbox = item[0]
-                texto_item = str(item[1])
-                conf_item = float(item[2])
+            # El formato esperado solo desempata; no puede compensar
+            # una lectura con confianza OCR inferior.
+            puntaje = confianza
+            if len(texto) == 6:
+                puntaje += 0.02
 
-                try:
-                    x_pos = sum(float(punto[0]) for punto in bbox) / len(bbox)
-                except (IndexError, TypeError, ValueError):
-                    x_pos = 0.0
-
-                detecciones.append((x_pos, texto_item, conf_item))
-
-        detecciones.sort(key=lambda d: d[0])
-
-        texto = ""
-        confianzas = []
-
-        for _, texto_item, conf_item in detecciones:
-            caracter = re.sub(r"[^A-Z0-9]", "", texto_item.upper())
-            if caracter:
-                texto += caracter
-                confianzas.append(conf_item)
-
-        if not texto or not confianzas:
-            continue
-
-        confianza = sum(confianzas) / len(confianzas)
-        es_moderno = bool(re.fullmatch(r"[A-Z]{4}[0-9]{2}", texto))
-
-        # Favorecer lecturas completas y con el formato moderno esperado
-        puntaje = confianza
-        if len(texto) == 6:
-            puntaje += 0.15
-        if es_moderno:
-            puntaje += 0.30
-
-        candidatos.append((puntaje, texto, confianza))
+            candidatos.append((texto, confianza, puntaje))
 
     if not candidatos:
         return "", 0.0
 
-    mejor = max(candidatos, key=lambda candidato: candidato[0])
+    # Las lecturas repetidas en distintas variantes reciben un pequeno apoyo.
+    conteo = {}
+    for texto, confianza, puntaje in candidatos:
+        conteo.setdefault(texto, []).append((confianza, puntaje))
+
+    resultados = []
+    for texto, lecturas in conteo.items():
+        confianza_media = sum(item[0] for item in lecturas) / len(lecturas)
+        apoyo = min(len(lecturas) - 1, 3) * 0.03
+        puntaje_final = confianza_media + apoyo
+
+        if len(texto) == 6:
+            puntaje_final += 0.02
+
+        resultados.append((puntaje_final, texto, confianza_media))
+
+    mejor = max(resultados, key=lambda item: item[0])
     return mejor[1], mejor[2]
 
 
