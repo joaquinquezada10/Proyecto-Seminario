@@ -6,3 +6,6 @@ dataset/
 yolov8n.pt
 .vscode/
 docs/
+runs/deteccion
+runs/patentes_50epocas
+runs/pruebas
