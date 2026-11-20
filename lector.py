@@ -35,27 +35,20 @@ def formatear_patente(texto: str) -> str:
 
 def preprocesar_imagen(imagen):
     """
-    Prepara el recorte de la patente para facilitar su lectura:
-    - Escala la imagen a una altura optima (~100px) manteniendo la proporcion.
-    - Convierte a escala de grises.
-    - Aplica filtro bilateral para eliminar ruido sin perder la definicion de bordes.
-    - Aplica CLAHE (ecualizacion adaptativa de contraste) para evitar manchas de ruido.
+    Mejora el recorte de la patente y aumenta su tamano para facilitar el OCR.
     """
     if imagen is None or imagen.size == 0:
         return None
 
     alto, ancho = imagen.shape[:2]
 
-    # Escalar a una altura minima recomendada para OCR preservando la proporcion
-    altura_minima = 100
-    if alto < altura_minima:
-        escala = altura_minima / float(alto)
-        ancho_nuevo = int(ancho * escala)
-        imagen = cv2.resize(
-            imagen,
-            (ancho_nuevo, altura_minima),
-            interpolation=cv2.INTER_LANCZOS4
-        )
+    # Ampliar recortes pequenos sin deformar la imagen
+    escala = max(2.0, 160 / float(alto))
+    imagen = cv2.resize(
+        imagen,
+        (int(ancho * escala), int(alto * escala)),
+        interpolation=cv2.INTER_CUBIC
+    )
 
     if len(imagen.shape) == 3:
         if imagen.shape[2] == 4:
@@ -63,75 +56,109 @@ def preprocesar_imagen(imagen):
         else:
             gris = cv2.cvtColor(imagen, cv2.COLOR_BGR2GRAY)
     else:
-        gris = imagen
+        gris = imagen.copy()
 
-    # Filtro bilateral para reducir artefactos de compresion JPEG
+    # Reducir ruido y mejorar el contraste local
     suavizado = cv2.bilateralFilter(gris, d=5, sigmaColor=50, sigmaSpace=50)
-
-    # CLAHE: realza el contraste localmente sin quemar ni generar manchas negras
     clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
     mejorada = clahe.apply(suavizado)
 
     return mejorada
 
 
+def generar_variantes_ocr(imagen):
+    """
+    Genera distintas versiones del recorte para probar condiciones de luz
+    y contraste diferentes.
+    """
+    mejorada = preprocesar_imagen(imagen)
+    if mejorada is None:
+        return []
+
+    # Umbralizacion para separar los caracteres del fondo
+    _, otsu = cv2.threshold(
+        mejorada, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU
+    )
+    adaptativa = cv2.adaptiveThreshold(
+        mejorada,
+        255,
+        cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+        cv2.THRESH_BINARY,
+        31,
+        11
+    )
+
+    return [mejorada, otsu, adaptativa]
+
+
 def leer_patente(imagen):
     """
-    Recibe el recorte de una patente y devuelve:
-    - Texto reconocido
-    - Nivel de confianza
+    Lee una patente probando varias versiones del recorte.
+    Devuelve el texto con mejor resultado y su confianza OCR.
     """
     if imagen is None or imagen.size == 0:
         return "", 0.0
 
-    procesada = preprocesar_imagen(imagen)
-    if procesada is None:
+    variantes = generar_variantes_ocr(imagen)
+    candidatos = []
+
+    for variante in variantes:
+        salida_ocr = lector.readtext(
+            variante,
+            allowlist="ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789",
+            detail=1,
+            paragraph=False
+        )
+
+        if not salida_ocr:
+            continue
+
+        # Ordenar los fragmentos de izquierda a derecha
+        detecciones = []
+        for item in salida_ocr:
+            if isinstance(item, (list, tuple)) and len(item) >= 3:
+                bbox = item[0]
+                texto_item = str(item[1])
+                conf_item = float(item[2])
+
+                try:
+                    x_pos = sum(float(punto[0]) for punto in bbox) / len(bbox)
+                except (IndexError, TypeError, ValueError):
+                    x_pos = 0.0
+
+                detecciones.append((x_pos, texto_item, conf_item))
+
+        detecciones.sort(key=lambda d: d[0])
+
+        texto = ""
+        confianzas = []
+
+        for _, texto_item, conf_item in detecciones:
+            caracter = re.sub(r"[^A-Z0-9]", "", texto_item.upper())
+            if caracter:
+                texto += caracter
+                confianzas.append(conf_item)
+
+        if not texto or not confianzas:
+            continue
+
+        confianza = sum(confianzas) / len(confianzas)
+        es_moderno = bool(re.fullmatch(r"[A-Z]{4}[0-9]{2}", texto))
+
+        # Favorecer lecturas completas y con el formato moderno esperado
+        puntaje = confianza
+        if len(texto) == 6:
+            puntaje += 0.15
+        if es_moderno:
+            puntaje += 0.30
+
+        candidatos.append((puntaje, texto, confianza))
+
+    if not candidatos:
         return "", 0.0
 
-    salida_ocr = lector.readtext(
-        procesada,
-        allowlist="ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789",
-        detail=1,
-        paragraph=False
-    )
-
-    if not salida_ocr:
-        return "", 0.0
-
-    # Extraer detecciones validas: (x_pos, texto, confianza)
-    detecciones = []
-    for item in salida_ocr:
-        if isinstance(item, (list, tuple)) and len(item) >= 3:
-            bbox = item[0]
-            texto_item = str(item[1])
-            conf_item = float(item[2])
-            try:
-                x_pos = float(bbox[0][0])
-            except (IndexError, TypeError):
-                x_pos = 0.0
-            detecciones.append((x_pos, texto_item, conf_item))
-
-    if not detecciones:
-        return "", 0.0
-
-    # Ordenar caracteres o palabras de izquierda a derecha segun su posicion X
-    detecciones.sort(key=lambda d: d[0])
-
-    texto = ""
-    confianzas = []
-
-    for _, texto_item, conf_item in detecciones:
-        caracter = re.sub(r"[^A-Z0-9]", "", texto_item.upper())
-        if caracter:
-            texto += caracter
-            confianzas.append(conf_item)
-
-    if not texto:
-        return "", 0.0
-
-    confianza_final = sum(confianzas) / len(confianzas)
-
-    return texto, confianza_final
+    mejor = max(candidatos, key=lambda candidato: candidato[0])
+    return mejor[1], mejor[2]
 
 
 def probar_con_foto():
