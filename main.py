@@ -40,33 +40,57 @@ def extraer_y_validar_patente_chilena(texto: str) -> Tuple[str, str, str, bool]:
     raw = re.sub(r"[^A-Z0-9]", "", texto.upper().strip())
     raw = raw.replace("CHILE", "").replace("WILE", "").replace("CHLE", "")
 
-    mapa_num_a_letra = {"0": "O", "1": "I", "2": "Z", "5": "S", "8": "B"}
+    mapa_num_a_letra = {"0": "O", "1": "I", "2": "Z", "3": "B", "5": "S", "6": "G", "8": "B"}
     mapa_letra_a_num = {
-        "O": "0", "D": "0", "Q": "0", "I": "1", "L": "1", "T": "1",
-        "Z": "2", "S": "5", "B": "8"
+        "O": "0", "D": "0", "Q": "0", "C": "0",
+        "I": "1", "L": "1", "T": "1",
+        "Z": "2", "S": "5", "B": "8", "G": "6"
     }
 
-    candidatos = []
+    candidatos = []          # (texto, es_original) donde es_original=True si viene del raw sin expansion
     if len(raw) == 6:
-        candidatos.append(raw)
+        candidatos.append((raw, True))
     elif len(raw) == 7:
         # Remache central entre letras y numeros en patente moderna
         if raw[4] in ("0", "O", "Q", "D"):
-            candidatos.append(raw[:4] + raw[5:])
+            candidatos.append((raw[:4] + raw[5:], True))
         # Remache central en patente antigua
         if raw[2] in ("0", "O", "Q", "D"):
-            candidatos.append(raw[:2] + raw[3:])
-        candidatos.append(raw[:6])
-        candidatos.append(raw[1:])
+            candidatos.append((raw[:2] + raw[3:], True))
+        candidatos.append((raw[:6], True))
+        candidatos.append((raw[1:], True))
     elif len(raw) > 7:
         # Extraer posibles subsecuencias de 6 caracteres
         for i in range(len(raw) - 5):
-            candidatos.append(raw[i:i + 6])
+            candidatos.append((raw[i:i + 6], True))
     else:
         return raw, raw, "", False
 
+    # Expandir candidatos con confusiones visuales de alta ambiguedad (W/H/M, V/U, etc.)
+    # Esto genera variantes adicionales para letras que el OCR confunde con alta frecuencia.
+    # Estos candidatos tienen menor prioridad que los derivados directamente del raw.
+    CONFUSIONES_LETRAS = {
+        "H": ["W", "M"],
+        "W": ["H", "M"],
+        "M": ["W", "H"],
+        "V": ["U", "W"],
+        "U": ["V", "O"],
+        "N": ["H", "M"],
+    }
+
+    vistos = {c for c, _ in candidatos}
+    for cand, _ in list(candidatos):
+        for pos in range(min(4, len(cand))):  # Solo posiciones de letras (Moderna: 0-3)
+            c = cand[pos]
+            if c in CONFUSIONES_LETRAS:
+                for sustitucion in CONFUSIONES_LETRAS[c]:
+                    nueva = cand[:pos] + sustitucion + cand[pos + 1:]
+                    if nueva not in vistos:
+                        vistos.add(nueva)
+                        candidatos.append((nueva, False))  # es_original=False
+
     mejores = []
-    for cand in candidatos:
+    for cand, es_original in candidatos:
         # 1. Probar hipotesis Formato Moderno (4 letras + 2 numeros)
         chars_mod = list(cand)
         score_mod = 0
@@ -83,7 +107,8 @@ def extraer_y_validar_patente_chilena(texto: str) -> Tuple[str, str, str, bool]:
         cand_mod = "".join(chars_mod)
         if re.match(r"^[A-Z]{4}[0-9]{2}$", cand_mod):
             formato_mod = f"{cand_mod[:2]} {cand_mod[2:4]}-{cand_mod[4:]}"
-            mejores.append((score_mod, cand_mod, formato_mod, "MODERNA"))
+            # es_original como desempate: candidatos originales tienen prioridad sobre expandidos
+            mejores.append((score_mod, int(es_original), cand_mod, formato_mod, "MODERNA"))
 
         # 2. Probar hipotesis Formato Antiguo (2 letras + 4 numeros)
         chars_ant = list(cand)
@@ -101,12 +126,23 @@ def extraer_y_validar_patente_chilena(texto: str) -> Tuple[str, str, str, bool]:
         cand_ant = "".join(chars_ant)
         if re.match(r"^[A-Z]{2}[0-9]{4}$", cand_ant):
             formato_ant = f"{cand_ant[:2]} {cand_ant[2:4]}-{cand_ant[4:]}"
-            mejores.append((score_ant, cand_ant, formato_ant, "ANTIGUA"))
+            mejores.append((score_ant, int(es_original), cand_ant, formato_ant, "ANTIGUA"))
 
     if mejores:
-        # Seleccionar el candidato con mayor coincidencia nativa
-        mejores.sort(key=lambda x: x[0], reverse=True)
-        _, limpia, formato, tipo = mejores[0]
+        # Seleccionar por: (1) mayor score nativo, (2) si coincide con el CSV de autorizados,
+        # (3) si es candidato original (no expandido por confusiones).
+        # Esto permite que una confusion OCR (ej: H leido en vez de W) sea corregida
+        # cuando la patente con W esta registrada en el CSV.
+        from registro import cargar_registro
+        registro_csv = cargar_registro()
+
+        def _clave_seleccion(item):
+            score, es_orig, limpia, _, _ = item
+            en_registro = 1 if limpia in registro_csv else 0
+            return (score, en_registro, es_orig)
+
+        mejores.sort(key=_clave_seleccion, reverse=True)
+        _, _, limpia, formato, tipo = mejores[0]
         return limpia, formato, tipo, True
 
     formato_fallback = f"{raw[:2]} {raw[2:4]}-{raw[4:]}" if len(raw) == 6 else raw
@@ -124,9 +160,22 @@ def registrar_evento_acceso(
 ) -> None:
     """
     Guarda un registro de cada vehiculo detectado en un archivo CSV de auditoria.
+    Evita duplicar filas con la misma combinacion (Archivo, Patente_Detectada).
     """
     CARPETA_SALIDAS.mkdir(parents=True, exist_ok=True)
     existe = RUTA_LOG_ACCESOS.is_file()
+
+    # Prevenir duplicados: si ya existe una fila con el mismo archivo y patente, no registrar
+    if existe:
+        try:
+            with open(RUTA_LOG_ACCESOS, mode="r", encoding="utf-8-sig") as f:
+                lector_csv = csv.DictReader(f)
+                for fila in lector_csv:
+                    if (fila.get("Archivo", "") == archivo_origen and
+                            fila.get("Patente_Detectada", "") == patente_detectada):
+                        return  # Entrada duplicada, no registrar
+        except Exception:
+            pass  # Si hay error al leer, registrar igualmente para no perder datos
 
     ahora = datetime.now()
     fila = {
@@ -183,9 +232,18 @@ def filtrar_y_unificar_cajas(
         if w < 35 or h < 15:
             continue
 
+        # Descartar recortes muy pequeños en terminos de area absoluta (falsos positivos lejanos)
+        if w * h < 1200:
+            continue
+
         aspect = w / float(max(h, 1))
         # Las patentes chilenas rectangulares tienen proporcion entre 1.3 y 5.5
         if aspect < 1.3 or aspect > 5.5:
+            continue
+
+        # Descartar recortes que son demasiado pequenos respecto a la imagen completa
+        area_img = ancho_img * alto_img
+        if area_img > 0 and (w * h) / area_img < 0.0005:
             continue
 
         cajas_filtradas.append(([x1, y1, x2, y2], conf_val))
@@ -338,8 +396,8 @@ def procesar_cuadro(
         bh = y2 - y1
 
         # Agregar margen para capturar caracteres cercanos a los bordes
-        pad_x = int(bw * 0.12)
-        pad_y = int(bh * 0.08)
+        pad_x = int(bw * 0.06)
+        pad_y = int(bh * 0.04)
         px1 = max(0, x1 - pad_x)
         px2 = min(ancho_img, x2 + pad_x)
         py1 = max(0, y1 - pad_y)

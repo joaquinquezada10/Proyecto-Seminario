@@ -91,7 +91,13 @@ def generar_variantes_ocr(imagen):
         11
     )
 
-    return [mejorada, otsu, otsu_invertida, adaptativa]
+    # Variante 5: imagen CLAHE con realce de nitidez (unsharp mask)
+    # Ayuda a distinguir caracteres con trazos finos como W vs H
+    import numpy as np
+    suavizado_gs = cv2.GaussianBlur(mejorada, (0, 0), 2.0)
+    nitida = cv2.addWeighted(mejorada, 1.8, suavizado_gs, -0.8, 0)
+
+    return [mejorada, otsu, otsu_invertida, adaptativa, nitida]
 
 
 PALABRAS_RUIDO = {"CHILE", "WILE", "CHLE", "CHI", "ILE", "CHIL", "HILE"}
@@ -214,10 +220,32 @@ def leer_patente(imagen):
         apoyo = min(len(confs) - 1, 3) * 0.05
 
         puntaje_final = conf_base + apoyo
+
+        # --- Bonificacion basada en validez de formato ---
+        # Verificar si el texto (o derivado quitando remache) forma una patente valida
+        def _es_formato_valido_ocr(t):
+            import re as _re
+            if len(t) == 6:
+                return bool(_re.match(r'^[A-Z]{4}[0-9]{2}$', t) or _re.match(r'^[A-Z]{2}[0-9]{4}$', t))
+            return False
+
         if len(texto) == 6:
-            puntaje_final += 0.25
-        elif len(texto) == 7 and (texto[4] in ("0", "O") or texto[2] in ("0", "O")):
-            puntaje_final += 0.18
+            if _es_formato_valido_ocr(texto):
+                # Formato valido sin correccion: bonificacion maxima
+                puntaje_final += 0.30
+            else:
+                # 6 chars pero formato incorrecto: bonificacion reducida
+                puntaje_final += 0.08
+        elif len(texto) == 7:
+            # Verificar si quitando posible remache se obtiene formato valido
+            candidato_mod = texto[:4] + texto[5:] if texto[4] in ("0", "O", "Q", "D") else None
+            candidato_ant = texto[:2] + texto[3:] if texto[2] in ("0", "O", "Q", "D") else None
+            if (candidato_mod and _es_formato_valido_ocr(candidato_mod)) or \
+               (candidato_ant and _es_formato_valido_ocr(candidato_ant)):
+                # 7 chars con remache que produce formato valido
+                puntaje_final += 0.26
+            else:
+                puntaje_final += 0.05
         elif len(texto) < 6:
             # Penalizar lecturas truncadas/incompletas
             puntaje_final -= 0.30
